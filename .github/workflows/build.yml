@@ -1,0 +1,48 @@
+name: Build and test
+
+# Every push and pull request is built and tested on x64 and ARM64.
+# Binaries are published only when a GitHub Release is published: the
+# release job attaches a zip per architecture plus SHA-256 checksums.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022   # Windows Server 2022, VS 2022
+            platform: x64
+            publish: true
+          - runner: windows-2025   # Windows Server 2025 (test only)
+            platform: x64
+            publish: false
+          - runner: windows-11-arm # native ARM64 build and test
+            platform: ARM64
+            publish: true
+    runs-on: ${{ matrix.runner }}
+    env:
+      OUT: ${{ github.workspace }}\build\${{ matrix.platform }}\Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild NERCFilt.sln /m /nologo /v:minimal /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+
+      - name: Test (password policy)
+        run: '& "$env:OUT\NERCFiltTests.exe"'
+
+      - name: Test (registration and policy configuration; modifies HKLM on this runner)
+        run: '& "$env:OUT\NERCFiltTests.exe" --registry'
