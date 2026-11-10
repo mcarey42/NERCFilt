@@ -167,7 +167,10 @@ function Get-EffectiveSetting([string] $Name, [int] $Default, [int] $Minimum, [i
 }
 
 function Request-Restart {
-    if ($NoRestartPrompt) {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([switch] $NoPrompt)
+
+    if ($NoPrompt) {
         Write-Host 'Restart this machine for the change to take effect.'
         return
     }
@@ -183,6 +186,13 @@ function Request-Restart {
 }
 
 function Install-Filter {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)] [string] $Source,
+        [switch] $AllowLsaProtection,
+        [switch] $NoRestartPrompt
+    )
+
     if (-not [Environment]::Is64BitProcess) {
         throw 'Run this script from 64-bit PowerShell; 32-bit PowerShell is redirected away from System32.'
     }
@@ -190,7 +200,7 @@ function Install-Filter {
         throw 'NERCFilt requires Windows Server 2016 or Windows 10 1607 (build 14393) or later.'
     }
 
-    $source = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $source = (Resolve-Path -LiteralPath $Source).ProviderPath
     $os = Get-OSArchitecture
     $dll = Get-PEArchitecture $source
     if ($os -ne $dll) {
@@ -201,7 +211,7 @@ function Install-Filter {
         $message = 'LSA Protection (RunAsPPL) is enabled. LSASS loads only plug-ins signed to ' +
                    "Microsoft's requirements for protected LSA. This build is unsigned: it will NOT load, " +
                    'and passwords will NOT be filtered.'
-        if (-not $Force) { throw "$message Re-run with -Force to install anyway." }
+        if (-not $AllowLsaProtection) { throw "$message Re-run with -Force to install anyway." }
         Write-Warning $message
     }
 
@@ -231,10 +241,13 @@ function Install-Filter {
     Write-Host "Installed NERCFilt $version"
     Write-Host "  $Target"
     Write-Host "  SHA-256 $sourceHash"
-    Request-Restart
+    Request-Restart -NoPrompt:$NoRestartPrompt
 }
 
 function Uninstall-Filter {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([switch] $NoRestartPrompt)
+
     if (-not $PSCmdlet.ShouldProcess($Target, 'Unregister and remove NERCFilt')) { return }
 
     if (Test-Path -LiteralPath $Target) {
@@ -257,7 +270,7 @@ function Uninstall-Filter {
             Write-Host "$Target is in use by LSASS; delete it after the restart."
         }
     }
-    Request-Restart
+    Request-Restart -NoPrompt:$NoRestartPrompt
 }
 
 function Show-Status {
@@ -308,11 +321,11 @@ function Show-Status {
 }
 
 if ($Uninstall) {
-    Uninstall-Filter
+    Uninstall-Filter -NoRestartPrompt:$NoRestartPrompt
 }
 elseif ($Status) {
     Show-Status
 }
 else {
-    Install-Filter
+    Install-Filter -Source $Path -AllowLsaProtection:$Force -NoRestartPrompt:$NoRestartPrompt
 }
