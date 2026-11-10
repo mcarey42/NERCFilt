@@ -1,0 +1,15 @@
+# Categories for automatically generated release notes.
+changelog:
+  exclude:
+    labels: [skip-changelog]
+  categories:
+    - title: Security
+      labels: [security]
+    - title: Bug fixes
+      labels: [bug]
+    - title: Enhancements
+      labels: [enhancement]
+    - title: Build, CI and dependencies
+      labels: [ci, dependencies, github_actions]
+    - title: Other changes
+      labels: ['*']
