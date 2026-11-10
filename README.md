@@ -63,9 +63,45 @@ Password Protection. A password must satisfy all of them.
 ## Install
 
 Download `NERCFilt-<version>-x64.zip` (or `-ARM64`) from the
-[Releases](../../releases) page and check it against `SHA256SUMS.txt`. Then,
-in an **elevated** command prompt on each machine (every domain controller,
-for domain-wide enforcement):
+[Releases](../../releases) page and verify it (see
+[Verifying a download](#verifying-a-download)). Extract it, then run this in
+an **elevated** PowerShell on each machine (every domain controller, for
+domain-wide enforcement):
+
+```powershell
+.\Install-NERCFilt.ps1
+```
+
+The script:
+1. checks that the DLL matches the machine's architecture and that Windows is
+   new enough
+2. refuses to install if LSA Protection is on (see below) unless you pass
+   `-Force`
+3. copies `NERCFilt.dll` to `System32` (an older copy is renamed, not
+   overwritten, because LSASS may have it loaded) and registers it
+4. prints the installed version and SHA-256 for your baseline records, and
+   offers to restart.
+
+`-WhatIf` shows what it would do, and `-NoRestartPrompt` is for scripted
+deployments. You may need `Unblock-File .\Install-NERCFilt.ps1` first, or
+`powershell -ExecutionPolicy Bypass -File .\Install-NERCFilt.ps1`, depending
+on your execution policy.
+
+**Restart the machine afterwards**: LSA reads its list of password filters
+only at boot. After the restart:
+
+```powershell
+.\Install-NERCFilt.ps1 -Status
+```
+
+`-Status` shows the installed version and hash, whether NERCFilt is
+registered and loaded, the LSA Protection state, the effective policy, and
+any recent Code Integrity events about the DLL. Then test the filter by
+trying to set a password that breaks the policy, for example `abcdefgh`, on
+a test account.
+
+<details>
+<summary>Manual install without the script</summary>
 
 ```bat
 copy NERCFilt.dll %SystemRoot%\System32\
@@ -73,12 +109,9 @@ regsvr32 %SystemRoot%\System32\NERCFilt.dll
 ```
 
 `regsvr32` adds `NERCFilt` to the REG_MULTI_SZ value
-`HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Notification Packages`, leaving
-every other entry in place. **Restart the machine**: LSA reads that list only
-at boot.
-
-Test it by trying to set a password that breaks the policy, for example
-`abcdefgh`, on a test account.
+`HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Notification Packages` and leaves
+every other entry in place. Then restart.
+</details>
 
 ### LSA Protection (RunAsPPL)
 
@@ -86,23 +119,40 @@ When LSA Protection is enabled, LSASS loads only plug-ins that meet
 Microsoft's signing requirements for protected LSA. Recent Windows versions
 enable it by default in more situations. The release binaries are currently
 **unsigned**, so on a protected LSA the filter will not load and the policy
-will not be enforced. Before deploying:
+will not be enforced. The install script checks for this. If you install
+anyway, `-Status` and the `Microsoft-Windows-CodeIntegrity/Operational`
+event log show whether the DLL was blocked.
 
-* check whether LSA Protection is on
-  (`HKLM\SYSTEM\CurrentControlSet\Control\Lsa\RunAsPPL`), and
-* after the restart, check the
-  `Microsoft-Windows-CodeIntegrity/Operational` event log for events about
-  NERCFilt.dll being blocked or audited.
+### Verifying a download
+
+Each release includes `SHA256SUMS.txt`, covering each zip and the
+`NERCFilt.dll` inside it:
+
+```powershell
+Get-FileHash .\NERCFilt-2.0.0-x64.zip
+```
+
+Releases also carry GitHub
+[build-provenance attestations](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations),
+which prove that a file was built from this repository by its release
+workflow. Check one with the [GitHub CLI](https://cli.github.com/):
+
+```
+gh attestation verify NERCFilt.dll --repo mcarey42/NERCFilt
+```
 
 ## Uninstall
 
-In an elevated command prompt:
+In an elevated PowerShell:
 
-```bat
-regsvr32 /u %SystemRoot%\System32\NERCFilt.dll
+```powershell
+.\Install-NERCFilt.ps1 -Uninstall
 ```
 
-Restart, then delete `%SystemRoot%\System32\NERCFilt.dll`.
+The script unregisters the filter and removes the DLL; if LSASS still has it
+loaded, the script tells you to delete it after the restart. Without the
+script: run `regsvr32 /u %SystemRoot%\System32\NERCFilt.dll`, restart, then
+delete the DLL.
 
 ## Building
 
@@ -136,13 +186,17 @@ runners.
 
 ## Continuous integration and releases
 
-`.github/workflows/build.yml` builds and tests every push and pull request
-on Windows Server 2022 and 2025 (x64) and Windows 11 ARM64. Publishing a
-GitHub Release whose tag matches `NERCFilt/version.h` (for example `v2.0.0`)
-builds both architectures, runs the tests, and attaches
-`NERCFilt-<version>-<arch>.zip` (DLL, PDB, README, LICENSE) plus
-`SHA256SUMS.txt` to the release. The checksums cover both the zips and the
-DLLs inside them, so the DLL hash can go straight into a CIP-010 baseline.
+`.github/workflows/build.yml` builds and tests every push to `main` and every
+pull request on Windows Server 2022 and 2025 (x64) and Windows 11 ARM64. That
+includes the DLL tests, a PSScriptAnalyzer lint of the install script, and a
+real install, status check and uninstall under Windows PowerShell 5.1.
+
+Pushing a tag that matches `NERCFilt/version.h` (for example `v2.0.0`)
+builds and tests both architectures, generates build-provenance
+attestations, and creates a **draft** release. A maintainer publishes it
+after review. [docs/RELEASING.md](docs/RELEASING.md) describes the procedure
+and the recommended repository settings. Security problems: see
+[SECURITY.md](SECURITY.md).
 
 ## Changes in 2.0
 
@@ -165,6 +219,9 @@ DLLs inside them, so the DLL hash can go straight into a CIP-010 baseline.
 * **New:** ARM64 builds, VS 2022+ toolchain, Server 2016 minimum, hardened
   build (CFG, CET, /sdl, /W4 /WX), version resource, automated tests and
   release pipeline.
+* **New:** `Install-NERCFilt.ps1` (install, uninstall, status), build
+  provenance attestations, draft-then-publish releases, SHA-pinned CI
+  actions with Dependabot, and a security policy.
 * **License:** now MIT (was LGPL 2.1).
 
 ## License
