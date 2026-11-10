@@ -1,0 +1,123 @@
+name: Build and test
+
+# Every push and pull request is built and tested on x64 and ARM64.
+# Binaries are published only when a GitHub Release is published: each
+# architecture is built natively, tested, packaged, and attached to the
+# release together with SHA-256 checksums.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022   # Windows Server 2022, VS 2022
+            platform: x64
+            publish: true
+          - runner: windows-2025   # Windows Server 2025 (test only)
+            platform: x64
+            publish: false
+          - runner: windows-11-arm # native ARM64 build and test
+            platform: ARM64
+            publish: true
+    runs-on: ${{ matrix.runner }}
+    env:
+      OUT: ${{ github.workspace }}\build\${{ matrix.platform }}\Release
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $h = Get-Content NERCFilt\version.h -Raw
+          $v = '{0}.{1}.{2}' -f ([regex]::Match($h, 'VERSION_MAJOR (\d+)').Groups[1].Value),
+                                ([regex]::Match($h, 'VERSION_MINOR (\d+)').Groups[1].Value),
+                                ([regex]::Match($h, 'VERSION_PATCH (\d+)').Groups[1].Value)
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "NERCFilt $v"
+
+      - name: Check release tag matches version.h
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ($env:TAG -ne "v$env:VERSION") {
+            Write-Error "Release tag '$env:TAG' does not match version.h (expected 'v$env:VERSION')."
+            exit 1
+          }
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild NERCFilt.sln /m /nologo /v:minimal /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+
+      - name: Test (password policy)
+        run: '& "$env:OUT\NERCFiltTests.exe"'
+
+      - name: Test (registration and policy configuration; modifies HKLM on this runner)
+        if: ${{ !cancelled() }}
+        run: '& "$env:OUT\NERCFiltTests.exe" --registry'
+
+      - name: Package
+        if: github.event_name == 'release' && matrix.publish
+        shell: pwsh
+        env:
+          NAME: NERCFilt-${{ steps.version.outputs.version }}-${{ matrix.platform }}
+        run: |
+          New-Item -ItemType Directory -Path "dist\$env:NAME" | Out-Null
+          Copy-Item "$env:OUT\NERCFilt.dll", "$env:OUT\NERCFilt.pdb", README.md, LICENSE -Destination "dist\$env:NAME"
+          # bsdtar writes portable zip entry names (forward slashes).
+          tar -a -c -f "dist\$env:NAME.zip" -C dist $env:NAME
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload package
+        if: github.event_name == 'release' && matrix.publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: NERCFilt-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Attach binaries to release
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum *.zip > SHA256SUMS.txt
+          for z in *.zip; do
+            d="${z%.zip}"
+            echo "$(unzip -p "$z" "$d/NERCFilt.dll" | sha256sum | cut -d' ' -f1)  $d/NERCFilt.dll" >> SHA256SUMS.txt
+          done
+          cat SHA256SUMS.txt
+
+      - name: Upload release assets
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" *.zip SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
