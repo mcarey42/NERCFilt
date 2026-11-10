@@ -1,0 +1,8 @@
+; Undecorated export names, as LSA and regsvr32 expect.
+LIBRARY NERCFilt
+EXPORTS
+    InitializeChangeNotify
+    PasswordFilter
+    PasswordChangeNotify
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE
